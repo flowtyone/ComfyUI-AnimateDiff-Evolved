@@ -1,5 +1,6 @@
-from torch import Tensor
 from typing import Union
+from torch import Tensor
+
 from .freeinit import FreeInitFilter
 from .sample_settings import (FreeInitOptions, IterationOptions,
                               NoiseLayerAdd, NoiseLayerAddWeighted, NoiseLayerGroup, NoiseLayerReplace, NoiseLayerType,
