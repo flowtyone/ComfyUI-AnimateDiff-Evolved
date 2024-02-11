@@ -421,7 +421,7 @@ class FreeInitOptions(IterationOptions):
             alpha_cumprod = 1 / ((sigma * sigma) + 1)
             sqrt_alpha_prod = alpha_cumprod ** 0.5
             sqrt_one_minus_alpha_prod = (1 - alpha_cumprod) ** 0.5
-            noised_latents = latents * sqrt_alpha_prod + noise * sqrt_one_minus_alpha_prod
+            noised_latents = latents * sqrt_alpha_prod + noise.to(latents.device) * sqrt_one_minus_alpha_prod
             # 2. create random noise z_rand for high frequency
             temp_sample_settings = sample_settings.clone()
             temp_sample_settings.batch_offset += self.iter_batch_offset * curr_i
