@@ -109,6 +109,26 @@ def extend_to_batch_size(tensor: Tensor, batch_size: int):
     return tensor
 
 
+# from comfy/controlnet.py
+def ade_broadcast_image_to(tensor, target_batch_size, batched_number):
+    current_batch_size = tensor.shape[0]
+    #print(current_batch_size, target_batch_size)
+    if current_batch_size == 1:
+        return tensor
+
+    per_batch = target_batch_size // batched_number
+    tensor = tensor[:per_batch]
+
+    if per_batch > tensor.shape[0]:
+        tensor = torch.cat([tensor] * (per_batch // tensor.shape[0]) + [tensor[:(per_batch % tensor.shape[0])]], dim=0)
+
+    current_batch_size = tensor.shape[0]
+    if current_batch_size == target_batch_size:
+        return tensor
+    else:
+        return torch.cat([tensor] * batched_number, dim=0)
+
+
 def get_sorted_list_via_attr(objects: list, attr: str) -> list:
     if not objects:
         return objects
@@ -149,7 +169,7 @@ def get_combined_multival(multivalA: Union[float, Tensor], multivalB: Union[floa
         areaA = multivalA.shape[1]*multivalA.shape[2]
         areaB = multivalB.shape[1]*multivalB.shape[2]
         # match height/width to mask with larger area
-        leader,follower = multivalA,multivalB if areaA >= areaB else multivalB,multivalA
+        leader,follower = (multivalA,multivalB) if areaA >= areaB else (multivalB,multivalA)
         batch_size = multivalA.shape[0] if multivalA.shape[0] >= multivalB.shape[0] else multivalB.shape[0]
         # make follower same dimensions as leader
         follower = torch.unsqueeze(follower, 1)
@@ -228,3 +248,39 @@ class ADKeyframeGroup:
             if not tk.default:
                 cloned.add(tk)
         return cloned
+
+
+class DummyNNModule(nn.Module):
+    class DoNothingWhenCalled:
+        def __call__(self, *args, **kwargs):
+            return
+
+    '''
+    Class that does not throw exceptions for almost anything you throw at it. As name implies, does nothing.
+    '''
+    def __init__(self):
+        super().__init__()
+
+    def __getattr__(self, *args, **kwargs):
+        return self.DoNothingWhenCalled()
+    
+    def __setattr__(self, name, value):
+        pass
+    
+    def __iter__(self, *args, **kwargs):
+        pass
+    
+    def __next__(self, *args, **kwargs):
+        pass
+
+    def __len__(self, *args, **kwargs):
+        pass
+    
+    def __getitem__(self, *args, **kwargs):
+        pass
+    
+    def __setitem__(self, *args, **kwargs):
+        pass
+    
+    def __call__(self, *args, **kwargs):
+        pass

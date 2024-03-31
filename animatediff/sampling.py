@@ -147,6 +147,18 @@ def get_additional_models_factory(orig_get_additional_models: Callable, motion_m
         # TODO: account for inference memory as well?
         return models, inference_memory
     return get_additional_models_with_motion
+
+def apply_model_factory(orig_apply_model: Callable):
+    def apply_model_ade_wrapper(self, *args, **kwargs):
+        x: Tensor = args[0]
+        cond_or_uncond = kwargs["transformer_options"]["cond_or_uncond"]
+        ad_params = kwargs["transformer_options"]["ad_params"]
+        if ADGS.motion_models is not None:
+            for motion_model in ADGS.motion_models.models:
+                motion_model.prepare_img_features(x=x, cond_or_uncond=cond_or_uncond, ad_params=ad_params, latent_format=self.latent_format)
+        del x
+        return orig_apply_model(*args, **kwargs)
+    return apply_model_ade_wrapper
 ######################################################################
 ##################################################################################
 
@@ -204,6 +216,7 @@ class FunctionInjectionHolder:
         self.orig_sampling_function = comfy.samplers.sampling_function # used to support sliding context windows in samplers
         self.orig_prepare_mask = comfy.sample.prepare_mask
         self.orig_get_additional_models = comfy.sample.get_additional_models
+        self.orig_apply_model = model.model.apply_model # TODO: remove this if end up not needing to hack it
         # Inject Functions
         openaimodel.forward_timestep_embed = forward_timestep_embed_factory()
         if params.unlimited_area_hack:
@@ -221,6 +234,11 @@ class FunctionInjectionHolder:
                         model.model.memory_required = unlimited_memory_required
                 except Exception:
                     pass
+            # if img_encoder present, inject apply_model to handle img_latents correctly
+            for motion_model in model.motion_models:
+                if motion_model.model.img_encoder != None:
+                    model.model.apply_model = apply_model_factory(self.orig_apply_model).__get__(model.model, type(model.model))
+                    break
             del info
         comfy.samplers.sampling_function = evolved_sampling_function
         comfy.sample.prepare_mask = prepare_mask_ad
@@ -236,6 +254,7 @@ class FunctionInjectionHolder:
             comfy.samplers.sampling_function = self.orig_sampling_function
             comfy.sample.prepare_mask = self.orig_prepare_mask
             comfy.sample.get_additional_models = self.orig_get_additional_models
+            model.model.apply_model = self.orig_apply_model
         except AttributeError:
             logger.error("Encountered AttributeError while attempting to restore functions - likely, an error occured while trying " + \
                          "to save original functions before injection, and a more specific error was thrown by ComfyUI.")
@@ -352,6 +371,9 @@ def motion_sample_factory(orig_comfy_sample: Callable, is_custom: bool=False) ->
             del cached_noise
             # reset global state
             ADGS.reset()
+            # clean motion_models
+            if model.motion_models is not None:
+                model.motion_models.cleanup()
             # restore injected functions
             function_injections.restore_functions(model)
             del function_injections
@@ -409,7 +431,7 @@ def sliding_calc_cond_uncond_batch(model, cond, uncond, x_in: Tensor, timestep, 
         control.full_latent_length = ADGS.params.full_length
         control.context_length = ADGS.params.context_options.context_length
     
-    def get_resized_cond(cond_in, full_idxs) -> list:
+    def get_resized_cond(cond_in, full_idxs: list[int], context_length: int) -> list:
         # reuse or resize cond items to match context requirements
         resized_cond = []
         # cond object is a list containing a dict - outer list is irrelevant, so just loop through it
@@ -448,6 +470,9 @@ def sliding_calc_cond_uncond_batch(model, cond, uncond, x_in: Tensor, timestep, 
                             elif hasattr(cond_value, "cond") and isinstance(cond_value.cond, Tensor):
                                 if cond_value.cond.size(0) == x_in.size(0):
                                     new_cond_item[cond_key] = cond_value._copy_with(cond_value.cond[full_idxs])
+                            elif cond_key == "num_video_frames": # for SVD
+                                new_cond_item[cond_key] = cond_value._copy_with(cond_value.cond)
+                                new_cond_item[cond_key].cond = context_length
                         resized_actual_cond[key] = new_cond_item
                     else:
                         resized_actual_cond[key] = cond_item
@@ -488,8 +513,8 @@ def sliding_calc_cond_uncond_batch(model, cond, uncond, x_in: Tensor, timestep, 
         # get subsections of x, timestep, cond, uncond, cond_concat
         sub_x = x_in[full_idxs]
         sub_timestep = timestep[full_idxs]
-        sub_cond = get_resized_cond(cond, full_idxs) if cond is not None else None
-        sub_uncond = get_resized_cond(uncond, full_idxs) if uncond is not None else None
+        sub_cond = get_resized_cond(cond, full_idxs, len(ctx_idxs)) if cond is not None else None
+        sub_uncond = get_resized_cond(uncond, full_idxs, len(ctx_idxs)) if uncond is not None else None
 
         sub_cond_out, sub_uncond_out = comfy.samplers.calc_cond_uncond_batch(model, sub_cond, sub_uncond, sub_x, sub_timestep, model_options)
 
